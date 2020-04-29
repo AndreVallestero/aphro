@@ -129,16 +129,6 @@ class Aphro:
         self._result = response.read()
         self._event.set()
 
-    async def some_task(self):
-        to_wait = randint(1, 100) / 10
-        should_fail = randint(0, 16) > 0
-        await sleep(to_wait)
-        if should_fail:
-            print('Failing on purpose...')
-            raise TimeoutError
-        print('Success')
-        return Test()
-
 def main():
     aphro = Aphro()
     result = aphro('GET', 'http://httpbin.org/get')
