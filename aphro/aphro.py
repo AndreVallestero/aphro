@@ -1,7 +1,8 @@
-from asyncio import Event, create_task, Task, gather, Queue, get_event_loop, run, sleep
+from asyncio import Event, create_task, Task, gather, Queue, get_event_loop, run, sleep, wait, ensure_future
 from concurrent.futures._base import CancelledError
 from aiohttp import ClientSession
 from proxybroker import Broker
+from proxybroker.providers import PROVIDERS
 from time import time
 
 class Aphro:
@@ -27,24 +28,23 @@ class Aphro:
 
         self._proxy_counter = 0
 
-    def __call__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+    async def __call__(self, *args, **kwargs):
         self._timeout_time = time() + self.timeout
-
-        self.update_proxies()
-        run(self.initial_spawn(), debug=True)
-        return self._result
-
-    # Rewrite class to be defined inside a loop so event and session only need to be instantiated once
-    async def initial_spawn(self):
         self._session = ClientSession()
         self._event = Event()
+
+        self.args = args
+        self.kwargs = kwargs
+
+        await self.update_proxies()
 
         for _ in range(self.pool_size):
             self.spawn()
 
         await self._event.wait()
+        return await self._result.read()
+
+    # Rewrite class to be defined inside a loop so event and session only need to be instantiated once
     
     def spawn(self):
         if time() > self._timeout_time:
@@ -60,25 +60,25 @@ class Aphro:
         self._proxy_counter = (self._proxy_counter + 1) % len(self.proxies)
         return proxy
 
-    def update_proxies(self):
+    async def update_proxies(self):
         self.proxies = [proxy for proxy in self.proxies if 
                     proxy[1] > self.proxy_sample_threshold and 
                     proxy[2] / proxy[1] < self.proxy_rate_threshold]
 
         len_proxies = len(self.proxies)
         if len_proxies < self.min_proxies:
-            self.gen_proxies(self.max_proxies - len_proxies)
+            await self.gen_proxies(self.max_proxies - len_proxies)
                 
-    def gen_proxies(self, num_proxies):
+    async def gen_proxies(self, num_proxies):
         print(f'Attempting to generate {num_proxies} proxies')
-        proxy_queue = Queue()
-        broker = Broker(proxy_queue)
-        tasks = gather(broker.find(types=['HTTP'], limit=num_proxies),
-            self.add_proxies(proxy_queue))
-
         loop = get_event_loop()
-        loop.set_debug(True)
-        loop.run_until_complete(tasks)
+        proxy_queue = Queue()
+        broker = Broker(proxy_queue, timeout=8, providers=PROVIDERS, loop=loop)
+
+        print(f'loop is: {loop.is_running()}')
+        print('Awaiting proxies')
+        await gather(broker.find(types=['HTTP'], limit=num_proxies),
+            self.add_proxies(proxy_queue))
 
     async def add_proxies(self, proxy_queue):
         while True:
@@ -129,19 +129,10 @@ class Aphro:
         self._result = response.read()
         self._event.set()
 
-    async def some_task(self):
-        to_wait = randint(1, 100) / 10
-        should_fail = randint(0, 16) > 0
-        await sleep(to_wait)
-        if should_fail:
-            print('Failing on purpose...')
-            raise TimeoutError
-        print('Success')
-        return Test()
 
 def main():
     aphro = Aphro()
-    result = aphro('GET', 'http://httpbin.org/get')
+    result = run(aphro('GET', 'http://httpbin.org/get'))
     print(result)
 
 main()
